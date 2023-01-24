@@ -1,0 +1,356 @@
+<!-- vim: sw=2 ts=2 expandtab smartindent ft=javascript
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>wasm lookin dummy thicc</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="description" content="" />
+  <style>
+document, body {
+  margin: 0px;
+  overflow: hidden;
+}
+  </style>
+</head>
+<body>
+  <canvas id="out"></canvas>
+  <script>
+"use strict";
+
+const canvas = document.getElementById("out");
+const gl = canvas.getContext("webgl2", {
+  alpha: false,
+  powerPreference: "high-performance"
+});
+if (!gl) throw new Error("couldn't get gl context");
+
+const program = (() => {
+  const vertexShaderSource = `#version 300 es
+  precision highp float;
+
+  in vec4 a_position;
+  in vec4 a_color;
+
+  out vec2 v_texcoord;
+  out vec4 v_color;
+  void main() {
+    gl_Position = vec4(vec2(a_position), 0, 1);
+    v_color = a_color;
+    v_texcoord = vec2(a_position.z, a_position.w);
+  }
+  `;
+
+  const fragmentShaderSource = `#version 300 es
+  precision highp float;
+
+  uniform sampler2D u_tex;
+
+  in vec2 v_texcoord;
+  in vec4 v_color;
+  out vec4 outColor;
+
+  void main() {
+    vec4 sampled = texture(u_tex, v_texcoord);
+    outColor = v_color * sampled;
+  }
+  `;
+
+  function createShader(gl, type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    const success = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
+    if (success) return shader;
+
+    throw new Error(gl.getShaderInfoLog(shader));
+  }
+
+  function createProgram(gl, vertexShader, fragmentShader) {
+    const program = gl.createProgram();
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+    const success = gl.getProgramParameter(program, gl.LINK_STATUS);
+    if (success) return program;
+
+    throw new Error(gl.getProgramInfoLog(program));
+  }
+
+  return createProgram(
+    gl,
+    createShader(gl, gl.VERTEX_SHADER, vertexShaderSource),
+    createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource)
+  );
+})();
+
+function gl_upload_image(image, i) {
+  // Create a texture.
+  const texture = gl.createTexture();
+ 
+  // make unit 0 the active texture unit
+  // (i.e, the unit all other texture commands will affect.)
+  gl.activeTexture(gl.TEXTURE0 + i);
+ 
+  // Bind texture to 'texture unit '0' 2D bind point
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+ 
+  // Set the parameters so we don't need mips and so we're not filtering
+  // and we don't repeat
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,
+    gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,
+    gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+ 
+  // Upload the image into the texture.
+  const mipLevel = 0;               // the largest mip
+  const internalFormat = gl.RGBA;   // format we want in the texture
+  const srcFormat = gl.RGBA;        // format of data we are supplying
+  const srcType = gl.UNSIGNED_BYTE  // type of data we are supplying
+  gl.texImage2D(gl.TEXTURE_2D,
+                mipLevel,
+                internalFormat,
+                srcFormat,
+                srcType,
+                image);
+
+  gl.generateMipmap(gl.TEXTURE_2D);
+}
+
+const SPRITESHEET_SCALE = 1 << 10;
+
+let spritesheet, ss_ctx;
+async function ss_sprite(name, x, y, w, h) {
+  const img = new Image();
+  img.src = `./img/${name}.png`;
+  await new Promise(res => img.onload = res);
+
+  if (spritesheet == undefined) {
+    spritesheet = document.createElement("canvas");
+    spritesheet.width = spritesheet.height = SPRITESHEET_SCALE;
+    ss_ctx = spritesheet.getContext("2d");
+  }
+
+  const oc = document.createElement("canvas");
+  oc.width  = img.width;
+  oc.height = img.height;
+  const octx = oc.getContext("2d");
+  octx.drawImage(img, 0, 0, oc.width, oc.height);
+
+  const img_d = octx.getImageData(0, 0, oc.width, oc.height);
+  for (let i = 0; i < img_d.data.length; i += 4) {
+    if (img_d.data[i+0] == 255 &&
+        img_d.data[i+1] == 255 &&
+        img_d.data[i+2] == 255 )
+      img_d.data[i+3] = 0;
+    if (img_d.data[i+0] == 0 &&
+        img_d.data[i+1] == 0 &&
+        img_d.data[i+2] == 0 )
+      img_d.data[i+0] = 255,
+      img_d.data[i+1] = 255,
+      img_d.data[i+2] = 255;
+  }
+  octx.putImageData(img_d, 0, 0);
+  ss_ctx.drawImage(oc, x, y, w, h);
+
+  gl_upload_image(spritesheet, 0);
+}
+function ss_font(text_px, text_pad) {
+  if (spritesheet == undefined) {
+    spritesheet = document.createElement("canvas");
+    spritesheet.width = spritesheet.height = SPRITESHEET_SCALE;
+    ss_ctx = spritesheet.getContext("2d");
+  }
+
+  /* generate font image */
+
+  ss_ctx.fillStyle = "white";
+  const leap = text_pad*2 + text_px;
+
+  /* so that zero-initialized letter parameters have full color */
+  {
+    const pad = text_pad;
+    ss_ctx.fillRect(pad/2, pad/2, leap-pad, leap-pad);
+  }
+
+  /* draw the letters */
+  ss_ctx.textBaseline = "top";
+  ss_ctx.font = text_px + 'px monospace';
+  for (let i = 0; i < 128; i++) {
+    const str = String.fromCharCode(i);
+
+    const tx =           (i % 12);
+    const ty = Math.floor(i / 12);
+    ss_ctx.fillText(
+      str,
+      tx * leap + text_pad,
+      ty * leap + text_pad,
+    );
+  }
+
+  gl_upload_image(spritesheet, 0);
+}
+
+// look up where the vertex data needs to go.
+const positionAttributeLocation = gl.getAttribLocation(program, "a_position");
+const colorAttributeLocation = gl.getAttribLocation(program, "a_color");
+const gl_vbuf = gl.createBuffer();
+
+const vert_floats = 8;
+const vert_bytes = Float32Array.BYTES_PER_ELEMENT * vert_floats;
+
+function create_vbuf(vcount) {
+
+  // Bind it to ARRAY_BUFFER (think of it as ARRAY_BUFFER = gl_vbuf)
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl_vbuf);
+  gl.bufferData(gl.ARRAY_BUFFER, vert_bytes * vcount, gl.DYNAMIC_DRAW);
+
+  gl.enableVertexAttribArray(positionAttributeLocation);
+  gl.enableVertexAttribArray(colorAttributeLocation);
+
+  const colorStart = Float32Array.BYTES_PER_ELEMENT * 4;
+  /* size, type, normalize, stride, offset */
+  gl.vertexAttribPointer(
+    positionAttributeLocation, 4, gl.FLOAT, false, vert_bytes, 0);
+  gl.vertexAttribPointer(
+    colorAttributeLocation, 4, gl.FLOAT, false, vert_bytes, colorStart);
+}
+
+const gl_ibuf = gl.createBuffer();
+function create_ibuf(icount) {
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl_ibuf);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,
+                icount * Uint16Array.BYTES_PER_ELEMENT,
+                gl.DYNAMIC_DRAW);
+}
+
+(async () => {
+  let vcount, icount;
+  let vbuf, ibuf, mem;
+  const env = {
+    ss_font,
+    ss_sprite: (name_ptr, x, y, w, h) => {
+      const name_str = new TextDecoder().decode(new Uint8Array(
+        mem,
+        name_ptr, 
+        new Uint8Array(mem, name_ptr).indexOf(0)
+      ));
+      ss_sprite(name_str, x, y, w, h);
+    },
+    gl_vbuf: (ptr, len) => {
+      vcount = len;
+      vbuf = new Float32Array(mem, ptr, len * vert_floats);
+    },
+    gl_ibuf: (ptr, len) => {
+      icount = len;
+      ibuf = new Uint16Array(mem, ptr, len);
+    },
+    eputs: (ptr, len) => {
+      const str_mem = new Uint8Array(mem, ptr, len);
+      console.log(new TextDecoder().decode(str_mem));
+    },
+    cosf: Math.cos,
+    fmodf: (f, n) => f % n,
+    sinf: Math.sin,
+    sqrtf: Math.sqrt,
+    abort: () => { throw new Error(); },
+  };
+  const wasm_src = fetch("build/alf.wasm");
+
+  const { instance } =
+    await WebAssembly.instantiateStreaming(wasm_src, { env });
+  const wasm = instance.exports;
+  mem = wasm.memory.buffer;
+
+  {
+    const req = await fetch("build/ex.wasm");
+    const src = await req.arrayBuffer();
+    const __heap_base = wasm.__heap_base.value;
+    new Uint8Array(mem, __heap_base, src.byteLength).set(src);
+    wasm.init(__heap_base, src.byteLength-1);
+  }
+
+  // await uploadFontImage(new Float32Array(mem, wasm.letter_width_buf(), 128))
+
+  create_vbuf(vcount);
+  create_ibuf(icount);
+  gl.useProgram(program);
+
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+  (window.onresize = () => {
+    // Tell WebGL how to convert from clip space to pixels
+    gl.viewport(
+      0,
+      0,
+      canvas.width = window.innerWidth,
+      canvas.height = window.innerHeight
+    );
+  })();
+
+  const keymap = {
+    'ShiftLeft':    (1 << 0), // MU_KEY_SHIFT        = 
+    'ShiftRight':   (1 << 0), // MU_KEY_SHIFT        = 
+    'ControlLeft':  (1 << 1), // MU_KEY_CTRL         = 
+    'ControlRight': (1 << 1), // MU_KEY_CTRL         = 
+    'AltLeft':      (1 << 2), // MU_KEY_ALT          = 
+    'AltRight':     (1 << 2), // MU_KEY_ALT          = 
+    'Backspace':    (1 << 3), // MU_KEY_BACKSPACE    = 
+    'Enter':        (1 << 4)  // MU_KEY_RETURN       = 
+  };
+
+  window.onmousedown = e => wasm.mouse(0, e.pageX, e.pageY);
+  window.onmouseup   = e => wasm.mouse(1, e.pageX, e.pageY);
+  window.onmousemove = e => wasm.mouse(2, e.pageX, e.pageY);
+
+  window.onkeydown = e => keymap[e.code]
+    ? wasm.key(0, keymap[e.code])
+    : wasm.key(2, e.key.charCodeAt(0));
+  window.onkeyup   = e => keymap[e.code]
+    ? wasm.key(1, keymap[e.code])
+    : {};
+
+  window.addEventListener(
+    'wheel',
+    e => wasm.wheel(e.deltaMode, e.pageX, e.pageY, e.deltaY),
+    { passive: false }
+  );
+
+  let last;
+  requestAnimationFrame(function frame(time) {
+    requestAnimationFrame(frame);
+
+    // {
+    if (0) {
+      out.hidden = true;
+      document.body.appendChild(spritesheet);
+      spritesheet.style.position = 'absolute';
+      spritesheet.style['top'] = '0px';
+      spritesheet.style['left'] = '0px';
+      document.body.style.background = 'black';
+    }
+
+    let dt = (time != undefined) && time - last;
+    last = time;
+
+    gl.clearColor(0.20, 0.30, 0.23, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    /* flush */
+    wasm.frame(canvas.width, canvas.height, dt);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, vbuf);
+    gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, ibuf);
+
+    gl.drawElements(gl.TRIANGLES, icount, gl.UNSIGNED_SHORT, 0);
+  });
+
+})();
+  </script>
+</body>
+</html>
