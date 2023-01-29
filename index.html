@@ -160,6 +160,10 @@ async function ss_sprite(name, x, y, w, h) {
 
   gl_upload_image(spritesheet, 0);
 }
+function ss_clear() {
+  spritesheet = undefined;
+  ss_ctx = undefined;
+}
 function ss_font(text_px, text_pad) {
   if (spritesheet == undefined) {
     spritesheet = document.createElement("canvas");
@@ -233,7 +237,8 @@ function create_ibuf(icount) {
   let vcount, icount;
   let vbuf, ibuf, mem;
   const env = {
-    ss_font,
+    memset: (ptr, c, n) => new Uint8Array(mem, ptr, n).fill(c),
+    ss_font, ss_clear,
     ss_sprite: (name_ptr, x, y, w, h) => {
       const name_str = new TextDecoder().decode(new Uint8Array(
         mem,
@@ -250,14 +255,19 @@ function create_ibuf(icount) {
       icount = len;
       ibuf = new Uint16Array(mem, ptr, len);
     },
+    gl_clear: (r, g, b) => {
+      gl.clearColor(r, g, b, 1.0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    },
     eputs: (ptr, len) => {
       const str_mem = new Uint8Array(mem, ptr, len);
       console.log(new TextDecoder().decode(str_mem));
     },
     cosf: Math.cos,
-    fmodf: (f, n) => f % n,
     sinf: Math.sin,
+    atan2f: Math.atan2,
     sqrtf: Math.sqrt,
+    fmodf: (f, n) => f % n,
     abort: () => { throw new Error(); },
   };
   const wasm_src = fetch("build/alf.wasm");
@@ -267,12 +277,26 @@ function create_ibuf(icount) {
   const wasm = instance.exports;
   mem = wasm.memory.buffer;
 
+  const takefile = fbuf => {
+    /* first let's make sure we can store it */
+    wasm.memory.grow(fbuf.byteLength / (1 << 16));
+    /* reattach buffer */
+    mem = wasm.memory.buffer;
+
+    /* write it into our (fresh?) memory */
+    const __heap_base = wasm.__heap_base.value;
+    const src_alloc = new Uint8Array(mem, __heap_base, fbuf.byteLength);
+    src_alloc.set(new Uint8Array(fbuf));
+
+    /* stack gets cleared too, I think */
+    wasm.init();
+    wasm.takefile(__heap_base, fbuf.byteLength);
+  };
+
   {
     const req = await fetch("build/ex.wasm");
     const src = await req.arrayBuffer();
-    const __heap_base = wasm.__heap_base.value;
-    new Uint8Array(mem, __heap_base, src.byteLength).set(src);
-    wasm.init(__heap_base, src.byteLength-1);
+    takefile(src);
   }
 
   // await uploadFontImage(new Float32Array(mem, wasm.letter_width_buf(), 128))
@@ -322,6 +346,17 @@ function create_ibuf(icount) {
     { passive: false }
   );
 
+  window.ondragover = e => {
+    e.preventDefault();
+  };
+  window.ondrop = async ev => {
+    ev.preventDefault();
+
+    for (const f of ev.dataTransfer.files) {
+      takefile(await f.arrayBuffer());
+    }
+  };
+
   let last;
   requestAnimationFrame(function frame(time) {
     requestAnimationFrame(frame);
@@ -338,9 +373,6 @@ function create_ibuf(icount) {
 
     let dt = (time != undefined) && time - last;
     last = time;
-
-    gl.clearColor(0.20, 0.30, 0.23, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
 
     /* flush */
     wasm.frame(canvas.width, canvas.height, dt);

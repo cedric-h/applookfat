@@ -1,0 +1,10 @@
+(module
+  (type (;0;) (func (param i32 i32)))
+  (import "env" "__linear_memory" (memory (;0;) 0))
+  (import "env" "dothing" (func (;0;)))
+  (func (;1;) (type 0) (param i32 i32)
+	(i32.const 2)
+	(i32.const 2)
+	(call 2))
+  (func (;2;) (type 0) (param i32 i32))
+  (export "my_export" (func 1)))
