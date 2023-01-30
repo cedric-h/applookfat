@@ -14,9 +14,8 @@ clang                            \
   -Wl,--export=wheel             \
   -Wl,--export=__heap_base       \
   -Wl,--import-undefined         \
-  -Os                            \
+  -gdwarf                        \
   -Wall                          \
   ../main.c                      \
   -o alf.wasm
 
-# -gdwarf                        \

@@ -13,6 +13,18 @@ clang                            \
   ../fn_table.c                  \
   -o fn_table.wasm
 
-wasm2wat fn_table.wasm
+clang                            \
+  --target=wasm32                \
+  -ffreestanding                 \
+  -nostdlib                      \
+  -Wl,--no-entry                 \
+  -Wl,--export=main              \
+  -Wl,--import-undefined         \
+  -O0                            \
+  -Wall                          \
+  ../big_call_stack.c            \
+  -o big_call_stack.wasm
+
+wasm2wat big_call_stack.wasm
 
 # -gdwarf                        \
