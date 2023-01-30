@@ -1,5 +1,7 @@
 // vim: sw=2 ts=2 expandtab smartindent
 
+#define ARR_LEN(arr) (sizeof(arr) / sizeof(arr[0]))
+
 #include <stdint.h>
 #ifndef __wasm__
   #include <stdlib.h>
@@ -858,9 +860,15 @@ static NameSpan fn_name_get(uint8_t *bytes, int file_size, int fn_idx) {
   };
 }
 
+static struct {
+  int cached_fn_index;
+  int called_fn_count;
+  int called_fn[1 << 15];
+} cache_fn_call_iter = { -1 };
 typedef enum {
   FnCallIterStage_Init,
   FnCallIterStage_Body,
+  FnCallIterStage_Cache,
 } FnCallIterStage;
 typedef struct {
   FnCallIterStage stage;
@@ -869,11 +877,23 @@ typedef struct {
   uint8_t *bytes;
   int file_size, fn_index;
   int called_fn_index;
+
+  int cache_i;
 } FnCallIter;
 static int fn_call_iter(FnCallIter *fci) {
 
   switch (fci->stage) {
+    case (FnCallIterStage_Cache): {
+      fci->called_fn_index = cache_fn_call_iter.called_fn[fci->cache_i];
+      return fci->cache_i++ < cache_fn_call_iter.called_fn_count;
+    } break;
+
     case (FnCallIterStage_Init): {
+
+      if (fci->fn_index == cache_fn_call_iter.cached_fn_index) {
+        fci->stage = FnCallIterStage_Cache;
+        return fn_call_iter(fci);
+      }
 
       WasmIter wmi = { .bytes = fci->bytes, .file_size = fci->file_size };
       while (wasm_iter(&wmi)) {
@@ -912,6 +932,10 @@ static int fn_call_iter(FnCallIter *fci) {
         if (instr == 0x10) {
           fci->called_fn_index = uleb_decode(fci->bytes, &fn_i);
           fn_body_iter(&fci->fei);
+
+          if (fci->cache_i < ARR_LEN(cache_fn_call_iter.called_fn))
+            cache_fn_call_iter.called_fn[fci->cache_i++] = fci->called_fn_index;
+
           return 1;
         }
 #if 0
@@ -922,6 +946,10 @@ static int fn_call_iter(FnCallIter *fci) {
               sig, table);
         }
 #endif
+      }
+      if (fci->cache_i < ARR_LEN(cache_fn_call_iter.called_fn)) {
+        cache_fn_call_iter.called_fn_count = fci->cache_i;
+        cache_fn_call_iter.cached_fn_index = fci->fn_index;
       }
       return 0;
     } break;
@@ -972,7 +1000,6 @@ extern uint8_t __heap_base;
 #define NULL ((void *)0)
 #define memset __builtin_memset
 #define memcpy __builtin_memcpy
-#define ARR_LEN(arr) (sizeof(arr)/sizeof(arr[0]))
 
 typedef struct { float r, g, b, a; } Clr;
 typedef struct { float x, y; float u, v; Clr color; } Vert;
@@ -1273,19 +1300,42 @@ static void draw_size_str(
     );
 }
 
+static int fn_is_export(uint8_t *bytes, int file_size, int fn_index) {
+  WasmIter wmi = { .bytes = bytes, .file_size = file_size };
+  while (wasm_iter(&wmi)) {
+    if (wmi.sec_id == SecId_Export) {
+      ExportSecIter esi = {
+        .bytes = bytes,
+        .sec_size = wmi.sec_size,
+        .sec_i    = wmi.sec_i   ,
+      };
+
+      while (export_sec_iter(&esi))
+        if (esi.export_kind == ExportKind_Func)
+          if (esi.export_index == fn_index)
+            return 1;
+    }
+  }
+
+  return 0;
+}
+
 typedef enum {
   DrawWasmLayer_Base,
   DrawWasmLayer_Hover,
   DrawWasmLayer_Text,
+
+  DrawWasmLayer_HoveredFn,
 } DrawWasmLayer;
-static void draw_wasm(
-  DrawWasmLayer layer,
+static int draw_wasm(
+  DrawWasmLayer layer, int hovered_fn_idx,
   uint8_t *bytes, int file_size,
   float radius, float pie_x, float pie_y
 ) {
-  int layer_base  = layer == DrawWasmLayer_Base;
-  int layer_hover = layer == DrawWasmLayer_Hover;
-  int layer_text = layer == DrawWasmLayer_Text;
+  int layer_base       = layer == DrawWasmLayer_Base;
+  int layer_hover      = layer == DrawWasmLayer_Hover;
+  int layer_text       = layer == DrawWasmLayer_Text;
+  int layer_hovered_fn = layer == DrawWasmLayer_HoveredFn;
 
   float mouse_rads;
   {
@@ -1323,13 +1373,25 @@ static void draw_wasm(
         };
         code_prog += code_chunk;
         int hover = dnin.start_rads < mouse_rads && dnin.end_rads > mouse_rads;
+        if (layer_hovered_fn && hover) return csi.fn_idx;
         if (!hover && code_chunk < 0.001f) continue;
         int hide_text = code_chunk < 0.01f;
 
+        int called_by_hovered = 0;
+        FnCallIter fci = { .bytes = bytes, .file_size = file_size, .fn_index = hovered_fn_idx };
+        while (fn_call_iter(&fci))
+          if (fci.called_fn_index == csi.fn_idx)
+            called_by_hovered = 1;
+
+        if (called_by_hovered || fn_is_export(bytes, file_size, csi.fn_idx)) {
+          float angle = rads_lerp(dnin.start_rads, dnin.end_rads, 0.5f);
+          dnin.x += cosf(angle) * radius * (called_by_hovered ? 0.1f : 0.2f);
+          dnin.y += sinf(angle) * radius * (called_by_hovered ? 0.1f : 0.2f);
+        }
 
         if (layer_base) {
           float hue = 0.2 + 0.6*fmodf((si/2.0f + ci) * GOLDEN_RATIO, 1.0f);
-          dnin.clr = clr_from_hsl(hue, 0.6f, 0.6f);
+          dnin.clr = clr_from_hsl(hue, 0.6f, called_by_hovered ? 0.3f : 0.6f);
           draw_ngon(&dnin);
         }
 
@@ -1354,6 +1416,16 @@ static void draw_wasm(
             state.mouse_x,
             state.mouse_y + UI_SCALE*UI_TEXT_SIZE
           );
+
+          if (fn_is_export(bytes, file_size, csi.fn_idx)) {
+            draw_str(
+                     "EXPORTED" ,
+              sizeof("EXPORTED")-1,
+              state.mouse_x,
+              state.mouse_y + 2*UI_SCALE*UI_TEXT_SIZE
+            );
+          }
+
         }
 
         if (!hide_text && layer_text) {
@@ -1436,71 +1508,18 @@ static void draw_wasm(
     /* render base-level chunk */
 
   }
-}
 
-void draw_fn_recurse(
-  uint8_t *bytes,
-  int file_size,
-
-  float pie_x,
-  float pie_y,
-  float height,
-
-  int fn_index,
-  int n
-) {
-  float hue = 0.2 + 0.6*fmodf((n + 2) * GOLDEN_RATIO, 1.0f);
-  Clr clr = clr_from_hsl(hue, 0.6f, 0.6f);
-
-  float w = height*10 * 1.0f/(float)(1 + n);
-  draw_rect(w, height, clr, pie_x - w/2, pie_y - height*(1+n));
-
-  int imported_fn_count = count_imported_fn(bytes, file_size);
-  FnCallIter fci = { .bytes = bytes, .file_size = file_size, .fn_index = fn_index };
-  while (fn_call_iter(&fci))
-    if (fci.called_fn_index >= imported_fn_count)
-      draw_fn_recurse(
-        bytes, file_size,
-
-        pie_x, pie_y,
-        height,
-
-        fci.called_fn_index,
-        n + 1
-      );
+  return 0;
 }
 
 void frame(int width, int height) {
   float pie_x =  width/2;
   float pie_y = height/2;
-  // draw_wasm(DrawWasmLayer_Base , bytes, file_size, height/3, pie_x, pie_y);
-  // draw_wasm(DrawWasmLayer_Hover, bytes, file_size, height/3, pie_x, pie_y);
-  // draw_wasm(DrawWasmLayer_Text , bytes, file_size, height/3, pie_x, pie_y);
-
-  WasmIter wmi = { .bytes = bytes, .file_size = file_size };
-  while (wasm_iter(&wmi)) {
-    if (wmi.sec_id == SecId_Export) {
-      ExportSecIter esi = {
-        .bytes = bytes,
-        .sec_size = wmi.sec_size,
-        .sec_i    = wmi.sec_i   ,
-      };
-
-      int i = 0;
-      while (export_sec_iter(&esi))
-        if (esi.export_kind == ExportKind_Func) {
-          draw_fn_recurse(
-            bytes, file_size,
-
-            pie_x, height,
-            height/20,
-
-            esi.export_index,
-            0
-          );
-        }
-    }
-  }
+  float radius = height/3;
+  int hovered_fn_idx = draw_wasm(DrawWasmLayer_HoveredFn, -1, bytes, file_size, radius, pie_x, pie_y);
+  draw_wasm(DrawWasmLayer_Base , hovered_fn_idx, bytes, file_size, radius, pie_x, pie_y);
+  draw_wasm(DrawWasmLayer_Hover, hovered_fn_idx, bytes, file_size, radius, pie_x, pie_y);
+  draw_wasm(DrawWasmLayer_Text , hovered_fn_idx, bytes, file_size, radius, pie_x, pie_y);
 
   Vert *vbuf = state.vbuf + state.vrt_i;
   for (Vert *p = state.vbuf; p != vbuf; p++) {
