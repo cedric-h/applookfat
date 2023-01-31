@@ -233,7 +233,27 @@ function create_ibuf(icount) {
                 gl.DYNAMIC_DRAW);
 }
 
+const gzipped_size = async buf => {
+  const zipper = new CompressionStream("gzip");
+  const writer = zipper.writable.getWriter();
+  writer.write(buf);
+  writer.close();
+  
+  let size = 0;
+  const reader = zipper.readable.getReader();
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    size += value.length;
+  }
+  return size;
+}
+
 (async () => {
+  let file_buf;
+  let gzipped_size_whole_file;
+  let section_size_cache;
+
   let vcount, icount;
   let vbuf, ibuf, mem;
   const env = {
@@ -269,6 +289,33 @@ function create_ibuf(icount) {
     sqrtf: Math.sqrt,
     fmodf: (f, n) => f % n,
     abort: () => { throw new Error(); },
+    file_section_size: (idx, len) => {
+      section_size_cache ??= {};
+      const key = idx + ',' + len;
+
+      if (len == -1) {
+        const whole_size = env.file_section_size(0, file_buf.byteLength);
+        return Object.values(section_size_cache).reduce((a, x) => a + x, 0) - whole_size;
+      }
+
+      if (section_size_cache[key] == "pending")
+        return len;
+
+      if (section_size_cache[key])
+        return section_size_cache[key];
+
+      section_size_cache[key] = "pending";
+
+      const without = new Uint8Array([...file_buf.slice(0, idx), ...file_buf.slice(idx+len, file_buf.length)]);
+      gzipped_size(without).then(gzipped_size_without => {
+
+        const delta = gzipped_size_whole_file - gzipped_size_without;
+        console.log(delta, { gzipped_size_whole_file, gzipped_size_without });
+        section_size_cache[key] = delta;
+      });
+
+      return len;
+    },
   };
   const wasm_src = fetch("build/alf.wasm");
 
@@ -277,7 +324,11 @@ function create_ibuf(icount) {
   const wasm = instance.exports;
   mem = wasm.memory.buffer;
 
-  const takefile = fbuf => {
+  const takefile = async fbuf => {
+    file_buf = new Uint8Array(fbuf);
+    gzipped_size_whole_file = await gzipped_size(file_buf);
+    section_size_cache = undefined;
+
     /* first let's make sure we can store it */
     wasm.memory.grow(fbuf.byteLength / (1 << 16));
     /* reattach buffer */
@@ -296,7 +347,7 @@ function create_ibuf(icount) {
   {
     const req = await fetch("build/ex.wasm");
     const src = await req.arrayBuffer();
-    takefile(src);
+    await takefile(src);
   }
 
   // await uploadFontImage(new Float32Array(mem, wasm.letter_width_buf(), 128))
@@ -353,7 +404,7 @@ function create_ibuf(icount) {
     ev.preventDefault();
 
     for (const f of ev.dataTransfer.files) {
-      takefile(await f.arrayBuffer());
+      await takefile(await f.arrayBuffer());
     }
   };
 

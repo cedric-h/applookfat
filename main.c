@@ -860,15 +860,9 @@ static NameSpan fn_name_get(uint8_t *bytes, int file_size, int fn_idx) {
   };
 }
 
-static struct {
-  int cached_fn_index;
-  int called_fn_count;
-  int called_fn[1 << 15];
-} cache_fn_call_iter = { -1 };
 typedef enum {
   FnCallIterStage_Init,
   FnCallIterStage_Body,
-  FnCallIterStage_Cache,
 } FnCallIterStage;
 typedef struct {
   FnCallIterStage stage;
@@ -877,24 +871,11 @@ typedef struct {
   uint8_t *bytes;
   int file_size, fn_index;
   int called_fn_index;
-
-  int cache_i;
 } FnCallIter;
 static int fn_call_iter(FnCallIter *fci) {
 
   switch (fci->stage) {
-    case (FnCallIterStage_Cache): {
-      fci->called_fn_index = cache_fn_call_iter.called_fn[fci->cache_i];
-      return fci->cache_i++ < cache_fn_call_iter.called_fn_count;
-    } break;
-
     case (FnCallIterStage_Init): {
-
-      if (fci->fn_index == cache_fn_call_iter.cached_fn_index) {
-        fci->stage = FnCallIterStage_Cache;
-        return fn_call_iter(fci);
-      }
-
       WasmIter wmi = { .bytes = fci->bytes, .file_size = fci->file_size };
       while (wasm_iter(&wmi)) {
         if (wmi.sec_id == SecId_Code) {
@@ -933,9 +914,6 @@ static int fn_call_iter(FnCallIter *fci) {
           fci->called_fn_index = uleb_decode(fci->bytes, &fn_i);
           fn_body_iter(&fci->fei);
 
-          if (fci->cache_i < ARR_LEN(cache_fn_call_iter.called_fn))
-            cache_fn_call_iter.called_fn[fci->cache_i++] = fci->called_fn_index;
-
           return 1;
         }
 #if 0
@@ -946,10 +924,6 @@ static int fn_call_iter(FnCallIter *fci) {
               sig, table);
         }
 #endif
-      }
-      if (fci->cache_i < ARR_LEN(cache_fn_call_iter.called_fn)) {
-        cache_fn_call_iter.called_fn_count = fci->cache_i;
-        cache_fn_call_iter.cached_fn_index = fci->fn_index;
       }
       return 0;
     } break;
@@ -1025,6 +999,7 @@ extern float sinf(float);
 extern float sqrtf(float);
 extern float atan2f(float, float);
 extern float fmodf(float, float);
+extern int file_section_size(int index, int len);
 #define abs(a) (((a) < 0) ? -(a) : (a))
 static float rads_dist(float a, float b) {
   float difference = fmodf(b - a, M_PI*2.0f),
@@ -1351,7 +1326,7 @@ static int draw_wasm(
   for (int si = 0; wasm_iter(&wmi); si++) {
     int child_text = 0;
 
-    if (wmi.sec_id == SecId_Code) {
+    if (wmi.sec_id == SecId_Code, 0) {
       CodeSecIter csi = {
         .bytes = bytes,
         .file_size = file_size,
@@ -1442,7 +1417,9 @@ static int draw_wasm(
 
     /* render base-level chunk */
     {
-      float chunk = (float)wmi.sec_size / (float)wmi.file_size;
+      int sec_size = file_section_size(wmi.sec_i, wmi.sec_size);
+      int whole_size = file_section_size(0, -1);
+      float chunk = (float)sec_size / (float)whole_size;
       DrawNgonIn dnin = {
         .radius = (wmi.sec_id == SecId_Code) ? radius*0.833 : radius,
         .start_rads = (prog +     0)*M_PI*2,
@@ -1477,7 +1454,7 @@ static int draw_wasm(
         );
         draw_size_str(
           kb_chars, sizeof(kb_chars),
-          wmi.sec_size,
+          sec_size,
           state.mouse_x,
           state.mouse_y + UI_SCALE*UI_TEXT_SIZE
         );
