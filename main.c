@@ -981,9 +981,9 @@ typedef struct { float x, y; float u, v; Clr color; } Vert;
 #define CLR_MAGENTA ((Clr) { 1.0f, 0.0f, 1.0f, 1.0f })
 #define CLR_WHITE   ((Clr) { 1.0f, 1.0f, 1.0f, 1.0f })
 #define CHAR_WH_RATIO (0.54)
-#define UI_SCALE (1.5)
-#define UI_TEXT_SIZE (12)
-#define UI_TEXT_PAD  (5)
+#define UI_SCALE (1)
+#define UI_TEXT_SIZE (20)
+#define UI_TEXT_PAD  (6)
 /* spritesheet */
 extern void ss_clear(void);
 extern void ss_font(int text_px, int text_pad);
@@ -1000,6 +1000,7 @@ extern float sqrtf(float);
 extern float atan2f(float, float);
 extern float fmodf(float, float);
 extern int file_section_size(int index, int len);
+extern int file_whole_size(void);
 #define abs(a) (((a) < 0) ? -(a) : (a))
 static float rads_dist(float a, float b) {
   float difference = fmodf(b - a, M_PI*2.0f),
@@ -1418,7 +1419,7 @@ static int draw_wasm(
     /* render base-level chunk */
     {
       int sec_size = file_section_size(wmi.sec_i, wmi.sec_size);
-      int whole_size = file_section_size(0, -1);
+      int whole_size = file_whole_size();
       float chunk = (float)sec_size / (float)whole_size;
       DrawNgonIn dnin = {
         .radius = (wmi.sec_id == SecId_Code) ? radius*0.833 : radius,

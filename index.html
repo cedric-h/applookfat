@@ -233,10 +233,11 @@ function create_ibuf(icount) {
                 gl.DYNAMIC_DRAW);
 }
 
-const gzipped_size = async buf => {
+const gzipped_size = async (buf0, buf1) => {
   const zipper = new CompressionStream("gzip");
   const writer = zipper.writable.getWriter();
-  writer.write(buf);
+            writer.write(buf0);
+  if (buf1) writer.write(buf1);
   writer.close();
   
   let size = 0;
@@ -251,8 +252,7 @@ const gzipped_size = async buf => {
 
 (async () => {
   let file_buf;
-  let gzipped_size_whole_file;
-  let section_size_cache;
+  let zip_worker, section_size_cache = {};
 
   let vcount, icount;
   let vbuf, ibuf, mem;
@@ -289,32 +289,47 @@ const gzipped_size = async buf => {
     sqrtf: Math.sqrt,
     fmodf: (f, n) => f % n,
     abort: () => { throw new Error(); },
-    file_section_size: (idx, len) => {
-      section_size_cache ??= {};
-      const key = idx + ',' + len;
-
-      if (len == -1) {
-        const whole_size = env.file_section_size(0, file_buf.byteLength);
-        return Object.values(section_size_cache).reduce((a, x) => a + x, 0) - whole_size;
+    gzipped_size_progress: () => {
+      let n_total = 0;
+      let n_pending = 0;
+      for (const key in section_size_cache) {
+        n_total++;
+        if (section_size_cache[key] == "pending")
+          n_pending++;
       }
+      if (n_total == 0)
+        return 0;
+      else
+        return 1 - n_pending/n_total;
+    },
+    file_whole_size: () => {
+      const prog = env.gzipped_size_progress();
 
-      if (section_size_cache[key] == "pending")
+      if (prog < 1)
+        return env.file_section_size(0, file_buf.byteLength);
+      else {
+        const whole_size = env.file_section_size(0, file_buf.byteLength);
+        let sum = 0;
+        for (const key in section_size_cache)
+          sum += section_size_cache[key];
+        return sum - whole_size;
+      }
+    },
+    file_section_size: (idx, len) => {
+      const key = idx + ',' + len;
+      const prog = env.gzipped_size_progress();
+
+      if (prog < 1) {
+        if (section_size_cache[key])
+          return len;
+
+        section_size_cache[key] = "pending";
+
+        zip_worker.postMessage({ idx, len });
+
         return len;
-
-      if (section_size_cache[key])
+      } else
         return section_size_cache[key];
-
-      section_size_cache[key] = "pending";
-
-      const without = new Uint8Array([...file_buf.slice(0, idx), ...file_buf.slice(idx+len, file_buf.length)]);
-      gzipped_size(without).then(gzipped_size_without => {
-
-        const delta = gzipped_size_whole_file - gzipped_size_without;
-        console.log(delta, { gzipped_size_whole_file, gzipped_size_without });
-        section_size_cache[key] = delta;
-      });
-
-      return len;
     },
   };
   const wasm_src = fetch("build/alf.wasm");
@@ -326,8 +341,23 @@ const gzipped_size = async buf => {
 
   const takefile = async fbuf => {
     file_buf = new Uint8Array(fbuf);
-    gzipped_size_whole_file = await gzipped_size(file_buf);
-    section_size_cache = undefined;
+    section_size_cache = {};
+
+    {
+      const gzipped_size_whole_file = await gzipped_size(file_buf);
+
+      if (zip_worker) zip_worker.terminate();
+      zip_worker = new Worker("zip_worker.js");
+      zip_worker.onmessage = ({ data: { gzipped_size_without, idx, len } }) => {
+        const delta = gzipped_size_whole_file - gzipped_size_without;
+        const key = idx + ',' + len;
+        section_size_cache[key] = delta;
+
+        const prog = env.gzipped_size_progress();
+        console.log({ prog });
+      };
+      zip_worker.postMessage({ fbuf });
+    }
 
     /* first let's make sure we can store it */
     wasm.memory.grow(fbuf.byteLength / (1 << 16));
