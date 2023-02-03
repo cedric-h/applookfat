@@ -982,7 +982,7 @@ typedef struct { float x, y; float u, v; Clr color; } Vert;
 #define CLR_WHITE   ((Clr) { 1.0f, 1.0f, 1.0f, 1.0f })
 #define CHAR_WH_RATIO (0.54)
 #define UI_SCALE (1)
-#define UI_TEXT_SIZE (20)
+#define UI_TEXT_SIZE (18)
 #define UI_TEXT_PAD  (6)
 /* spritesheet */
 extern void ss_clear(void);
@@ -1000,7 +1000,6 @@ extern float sqrtf(float);
 extern float atan2f(float, float);
 extern float fmodf(float, float);
 extern int file_section_size(int index, int len);
-extern int file_whole_size(void);
 #define abs(a) (((a) < 0) ? -(a) : (a))
 static float rads_dist(float a, float b) {
   float difference = fmodf(b - a, M_PI*2.0f),
@@ -1296,6 +1295,36 @@ static int fn_is_export(uint8_t *bytes, int file_size, int fn_index) {
   return 0;
 }
 
+int file_whole_size = 1;
+static int file_whole_size_calc(uint8_t *bytes, int file_size) {
+  int ret = 0;
+  WasmIter wmi = { .bytes = bytes, .file_size = file_size };
+  while (wasm_iter(&wmi)) {
+    int sec_size = file_section_size(wmi.sec_i, wmi.sec_size);
+
+    if (wmi.sec_id == SecId_Code, 0) {
+      CodeSecIter csi = {
+        .bytes = bytes,
+        .file_size = file_size,
+        .sec_size = wmi.sec_size,
+        .sec_i    = wmi.sec_i   ,
+      };
+
+      float funcs_size = 0;
+      while (code_sec_iter(&csi))
+        funcs_size += file_section_size(csi.sec_i, csi.fn_size);
+
+      if (funcs_size > sec_size)
+        ret += funcs_size;
+      else
+        ret += sec_size;
+    }
+    else
+      ret += sec_size;
+  }
+  return ret;
+}
+
 typedef enum {
   DrawWasmLayer_Base,
   DrawWasmLayer_Hover,
@@ -1339,7 +1368,9 @@ static int draw_wasm(
       for (int ci = 0; code_sec_iter(&csi); ci++) {
         // NameSpan fn_name = fn_name_get(bytes, file_size, csi.fn_idx);
         
-        float code_chunk = (float)csi.fn_size / (float) wmi.file_size;
+        int code_size = file_section_size(csi.sec_i, csi.fn_size);
+        int whole_size = file_whole_size;
+        float code_chunk = (float)code_size / (float)whole_size;
         DrawNgonIn dnin = {
           .radius = radius,
           .start_rads = (code_prog +          0)*M_PI*2,
@@ -1348,37 +1379,46 @@ static int draw_wasm(
           .y = pie_y
         };
         code_prog += code_chunk;
+
+        /* figure out if hovered */
         int hover = dnin.start_rads < mouse_rads && dnin.end_rads > mouse_rads;
         if (layer_hovered_fn && hover) return csi.fn_idx;
+
+        /* skip drawing really small non-hovered things */
         if (!hover && code_chunk < 0.001f) continue;
         int hide_text = code_chunk < 0.01f;
 
+        /* figure out if called by hovered */
         int called_by_hovered = 0;
         FnCallIter fci = { .bytes = bytes, .file_size = file_size, .fn_index = hovered_fn_idx };
         while (fn_call_iter(&fci))
           if (fci.called_fn_index == csi.fn_idx)
             called_by_hovered = 1;
 
+        /* visually push out slice if needed */
         if (called_by_hovered || fn_is_export(bytes, file_size, csi.fn_idx)) {
           float angle = rads_lerp(dnin.start_rads, dnin.end_rads, 0.5f);
           dnin.x += cosf(angle) * radius * (called_by_hovered ? 0.1f : 0.2f);
           dnin.y += sinf(angle) * radius * (called_by_hovered ? 0.1f : 0.2f);
         }
 
+        /* draw slice */
         if (layer_base) {
           float hue = 0.2 + 0.6*fmodf((si/2.0f + ci) * GOLDEN_RATIO, 1.0f);
           dnin.clr = clr_from_hsl(hue, 0.6f, called_by_hovered ? 0.3f : 0.6f);
           draw_ngon(&dnin);
         }
 
-        NameSpan fn_name = fn_name_get(bytes, file_size, csi.fn_idx);
+        /* draw darker slice if hovered */
         if (layer_hover && hover) {
           float a = dnin.clr.a = 0.15f;
           dnin.clr.r = dnin.clr.g = dnin.clr.b = a*0.1f;
           draw_ngon(&dnin);
         }
 
+        NameSpan fn_name = fn_name_get(bytes, file_size, csi.fn_idx);
         if (layer_text && hover) {
+
           child_text = 1;
           draw_str(
             fn_name.name,
@@ -1388,7 +1428,7 @@ static int draw_wasm(
           );
           draw_size_str(
             kb_chars, sizeof(kb_chars),
-            csi.fn_size,
+            code_size,
             state.mouse_x,
             state.mouse_y + UI_SCALE*UI_TEXT_SIZE
           );
@@ -1419,7 +1459,7 @@ static int draw_wasm(
     /* render base-level chunk */
     {
       int sec_size = file_section_size(wmi.sec_i, wmi.sec_size);
-      int whole_size = file_whole_size();
+      int whole_size = file_whole_size;
       float chunk = (float)sec_size / (float)whole_size;
       DrawNgonIn dnin = {
         .radius = (wmi.sec_id == SecId_Code) ? radius*0.833 : radius,
@@ -1491,6 +1531,8 @@ static int draw_wasm(
 }
 
 void frame(int width, int height) {
+  file_whole_size = file_whole_size_calc(bytes, file_size);
+
   float pie_x =  width/2;
   float pie_y = height/2;
   float radius = height/3;

@@ -183,17 +183,25 @@ function ss_font(text_px, text_pad) {
   }
 
   /* draw the letters */
-  ss_ctx.textBaseline = "top";
-  ss_ctx.font = text_px + 'px monospace';
+  ss_ctx.textAlign = "center" ;
+  ss_ctx.textBaseline = "middle";
+  ss_ctx.font = (text_px - 4) + 'px monospace';
+  ss_ctx.lineWidth = 3;
+  ss_ctx.strokeStyle = 'rgb(0, 0, 0)';
   for (let i = 0; i < 128; i++) {
     const str = String.fromCharCode(i);
 
     const tx =           (i % 12);
     const ty = Math.floor(i / 12);
+    ss_ctx.strokeText(
+      str,
+      (tx + 0.355) * leap,
+      (ty + 0.500) * leap,
+    );
     ss_ctx.fillText(
       str,
-      tx * leap + text_pad,
-      ty * leap + text_pad,
+      (tx + 0.355) * leap,
+      (ty + 0.500) * leap,
     );
   }
 
@@ -233,26 +241,53 @@ function create_ibuf(icount) {
                 gl.DYNAMIC_DRAW);
 }
 
-const gzipped_size = async (buf0, buf1) => {
-  const zipper = new CompressionStream("gzip");
-  const writer = zipper.writable.getWriter();
-            writer.write(buf0);
-  if (buf1) writer.write(buf1);
-  writer.close();
-  
-  let size = 0;
-  const reader = zipper.readable.getReader();
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    size += value.length;
-  }
-  return size;
+let zip_workers = [], work_queue = [];
+function size_delta(fbuf, idx, len) {
+  if (zip_workers.length == 0)
+    for (let i = 0; i < navigator.hardwareConcurrency; i++)
+      (async () => {
+        const zip_worker = new Worker("zip_worker.js");
+        zip_workers.push(zip_worker);
+
+        await new Promise(res => {
+          zip_worker.onmessage = ({ data }) => {
+            if (data == "ready")
+              res();
+            else
+              throw new Error(
+                "expected ready from zip_worker, got " +
+                data
+              );
+          };
+          zip_worker.postMessage({ fbuf });
+        });
+
+        while (true) {
+          if (work_queue.length == 0) {
+            /* no work? ig i'll just kill myself ;o; */
+            zip_worker.terminate();
+            zip_workers.splice(zip_workers.indexOf(zip_worker), 1);
+            break;
+          }
+          const { res, idx, len } = work_queue.pop();
+
+          await new Promise(resume => {
+            zip_worker.onmessage = ({ data: { delta, idx, len } }) => {
+              res(delta);
+              resume();
+            };
+            zip_worker.postMessage({ idx, len });
+          });
+        }
+      })();
+
+  return new Promise(res => work_queue.push({ res, idx, len }));
 }
 
 (async () => {
   let file_buf;
-  let zip_worker, section_size_cache = {};
+  let gzipped_size_progress = 0,
+      section_size_cache = {};
 
   let vcount, icount;
   let vbuf, ibuf, mem;
@@ -289,43 +324,38 @@ const gzipped_size = async (buf0, buf1) => {
     sqrtf: Math.sqrt,
     fmodf: (f, n) => f % n,
     abort: () => { throw new Error(); },
-    gzipped_size_progress: () => {
-      let n_total = 0;
-      let n_pending = 0;
-      for (const key in section_size_cache) {
-        n_total++;
-        if (section_size_cache[key] == "pending")
-          n_pending++;
-      }
-      if (n_total == 0)
-        return 0;
-      else
-        return 1 - n_pending/n_total;
-    },
-    file_whole_size: () => {
-      const prog = env.gzipped_size_progress();
-
-      if (prog < 1)
-        return env.file_section_size(0, file_buf.byteLength);
-      else {
-        const whole_size = env.file_section_size(0, file_buf.byteLength);
-        let sum = 0;
-        for (const key in section_size_cache)
-          sum += section_size_cache[key];
-        return sum - whole_size;
-      }
-    },
+    gzipped_size_progress: () => gzipped_size_progress,
     file_section_size: (idx, len) => {
       const key = idx + ',' + len;
       const prog = env.gzipped_size_progress();
 
       if (prog < 1) {
-        if (section_size_cache[key])
+        if (key in section_size_cache)
           return len;
 
         section_size_cache[key] = "pending";
+        size_delta(file_buf, idx, len).then(delta => {
+          section_size_cache[key] = delta;
 
-        zip_worker.postMessage({ idx, len });
+          /* log a lil progress */
+          if (work_queue.length)
+            console.log(1 - work_queue.length / Object.keys(section_size_cache).length);
+
+          /* update progress */
+          {
+            let n_total = 0;
+            let n_pending = 0;
+            for (const key in section_size_cache) {
+              n_total++;
+              if (section_size_cache[key] == "pending")
+                n_pending++;
+            }
+            if (n_total == 0)
+              gzipped_size_progress = 0;
+            else
+              gzipped_size_progress = 1 - n_pending/n_total;
+          }
+        });
 
         return len;
       } else
@@ -342,22 +372,11 @@ const gzipped_size = async (buf0, buf1) => {
   const takefile = async fbuf => {
     file_buf = new Uint8Array(fbuf);
     section_size_cache = {};
+    gzipped_size_progress = 0;
 
-    {
-      const gzipped_size_whole_file = await gzipped_size(file_buf);
-
-      if (zip_worker) zip_worker.terminate();
-      zip_worker = new Worker("zip_worker.js");
-      zip_worker.onmessage = ({ data: { gzipped_size_without, idx, len } }) => {
-        const delta = gzipped_size_whole_file - gzipped_size_without;
-        const key = idx + ',' + len;
-        section_size_cache[key] = delta;
-
-        const prog = env.gzipped_size_progress();
-        console.log({ prog });
-      };
-      zip_worker.postMessage({ fbuf });
-    }
+    for (const zw of zip_workers) zw.terminate();
+    zip_workers = [];
+    work_queue = [];
 
     /* first let's make sure we can store it */
     wasm.memory.grow(fbuf.byteLength / (1 << 16));
