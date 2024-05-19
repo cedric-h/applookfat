@@ -394,7 +394,7 @@ function size_delta(fbuf, idx, len) {
   };
 
   {
-    const req = await fetch("build/ex.wasm");
+    const req = await fetch("example_wasms/ex.wasm");
     const src = await req.arrayBuffer();
     await takefile(src);
   }
