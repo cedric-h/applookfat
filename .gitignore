@@ -3,3 +3,6 @@
 # *.wasm
 *.exe
 /tests/build
+/tests/brotli
+
+main.wasm

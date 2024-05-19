@@ -1,0 +1,4 @@
+[submodule "path_to_submodule"] 
+  path = tests/brotli 
+  url = git://https://github.com/google/brotli
+

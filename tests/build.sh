@@ -1,42 +1,14 @@
-mkdir -p build
-cd build
+cd brotli
 
-# clang                            \
-#   --target=wasm32                \
-#   -ffreestanding                 \
-#   -nostdlib                      \
-#   -Wl,--no-entry                 \
-#   -Wl,--export=main              \
-#   -Wl,--import-undefined         \
-#   -Os                            \
-#   -Wall                          \
-#   ../fn_table.c                  \
-#   -o fn_table.wasm
-
-clang                            \
+clang \
   --target=wasm32                \
   -ffreestanding                 \
   -nostdlib                      \
-  -Wl,--no-entry                 \
-  -Wl,--export=main              \
-  -Wl,--import-undefined         \
-  -Os                            \
-  -Wall                          \
-  ../hello_world.c               \
-  -o hello_world.wasm
-
-# clang                            \
-#   --target=wasm32                \
-#   -ffreestanding                 \
-#   -nostdlib                      \
-#   -Wl,--no-entry                 \
-#   -Wl,--export=main              \
-#   -Wl,--import-undefined         \
-#   -O0                            \
-#   -Wall                          \
-#   ../big_call_stack.c            \
-#   -o big_call_stack.wasm
-
-# wasm2wat big_call_stack.wasm
-
-# -gdwarf                        \
+  c/common/constants.c           \
+  c/common/context.c             \
+  c/common/dictionary.c          \
+  c/common/platform.c            \
+  c/common/shared_dictionary.c   \
+  c/common/transform.c           \
+  -I c/include \
+  -o brotli.wasm
