@@ -1,6 +1,15 @@
-you drop a WASM bundle on the screen and it parses it and visualizes the size of each section/function therein.
+# you drop a WASM bundle on the screen and it parses it and visualizes the size of each section/function therein.
 
 It also traces function calls, such that when you hover over one function, it also shows you what functions are called from it.
+
+# philosophical meandering
+
+i would argue that one of the greatest caveats of WASM is the killing blow it deals to the "open web."
+
+hopefully this project "opens" your WASM for you a bit; although you do need debug symbols for it to be useful.
+
+
+# methodology/improvements
 
 it's all written in C and rendered with WebGL because your WASM bundle is fat as fuck and any overhead is too much overhead.
 
