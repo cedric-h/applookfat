@@ -1356,7 +1356,7 @@ static int draw_wasm(
   for (int si = 0; wasm_iter(&wmi); si++) {
     int child_text = 0;
 
-    if (wmi.sec_id == SecId_Code, 0) {
+    if (wmi.sec_id == SecId_Code) {
       CodeSecIter csi = {
         .bytes = bytes,
         .file_size = file_size,
