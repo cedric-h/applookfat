@@ -4,6 +4,8 @@ It also traces function calls, such that when you hover over one function, it al
 
 it's all written in C and rendered with WebGL because your WASM bundle is fat as fuck and any overhead is too much overhead.
 
+actually, i could be leveraging C and WASM far more efficiently; there are still WASM bundles for which this app stutters and chokes. progress to be made, iterations to be had and so forth.
+
 # example 
 
 here's an example of what you get when you drop applookfat's own bundle into itself (kinky!)
