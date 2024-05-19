@@ -4,6 +4,6 @@ It also traces function calls, such that when you hover over one function, it al
 
 # example 
 
-here's an example of what you get whne you drop applookfat's own bundle into itself (kinky!)
+here's an example of what you get when you drop applookfat's own bundle into itself (kinky!)
 
 ![Screenshot_20230202_011058](https://github.com/cedric-h/applookfat/assets/25539554/ccd208f1-ffcc-49cf-bf36-d028b7dcfd70)
